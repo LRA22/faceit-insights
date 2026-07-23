@@ -28,7 +28,7 @@ async function analyze(q) {
   }
 
   btn.disabled = true;
-  setStatus('Consultando Faceit…');
+  setStatus('Consultando Faceit e gerando diagnóstico com Gemini…');
   results.hidden = true;
 
   const url = `/api/analyze?q=${encodeURIComponent(q)}`;
@@ -152,6 +152,7 @@ function render(data) {
         </table>
       </div>
 
+      <h3 style="margin:1.25rem 0 0.6rem;font-size:1rem;color:var(--muted)">Plano para este perfil</h3>
       <div class="actions">
         ${actions
           .map(
