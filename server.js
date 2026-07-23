@@ -2,14 +2,11 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 
-const execFileAsync = promisify(execFile);
 const PORT = process.env.PORT || 3847;
 const PUBLIC = path.join(__dirname, 'public');
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const FACEIT_API_KEY = (process.env.FACEIT_API_KEY || '').trim();
+const FACEIT_API = 'https://open.faceit.com/data/v4';
 
 function send(res, status, body, type = 'application/json') {
   let data = body;
@@ -42,79 +39,101 @@ function parseNickname(input) {
   return raw.replace(/^@/, '').split(/[/?#]/)[0] || null;
 }
 
-function curlBinary() {
-  return process.platform === 'win32' ? 'curl.exe' : 'curl';
-}
-
-async function faceitGetViaCurl(url) {
-  const { stdout } = await execFileAsync(
-    curlBinary(),
-    ['-sS', '-L', '-A', UA, '--max-time', '25', url],
-    { maxBuffer: 5 * 1024 * 1024 }
-  );
-  const text = String(stdout || '');
-  if (!text || text.startsWith('<')) {
-    const err = new Error('Faceit bloqueou a requisição (Cloudflare)');
-    err.status = 502;
-    throw err;
-  }
-  return JSON.parse(text);
-}
-
-async function faceitGet(url) {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': UA,
-        Referer: 'https://www.faceit.com/',
-        Origin: 'https://www.faceit.com',
-      },
-    });
-    const text = await res.text();
-    if (res.ok && text && !text.startsWith('<')) {
-      return JSON.parse(text);
-    }
-  } catch (_) {
-    /* fallback abaixo */
-  }
-  return faceitGetViaCurl(url);
-}
-
 function num(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
 
-function analyze(player, lifetime, recent) {
+function pick(obj, keys, fallback = null) {
+  if (!obj) return fallback;
+  for (const key of keys) {
+    if (obj[key] != null && obj[key] !== '') return obj[key];
+  }
+  return fallback;
+}
+
+async function faceitApi(pathname) {
+  if (!FACEIT_API_KEY) {
+    const err = new Error(
+      'Configure FACEIT_API_KEY no Render (chave em https://developers.faceit.com)'
+    );
+    err.status = 503;
+    throw err;
+  }
+
+  const res = await fetch(`${FACEIT_API}${pathname}`, {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${FACEIT_API_KEY}`,
+    },
+  });
+  const text = await res.text();
+
+  if (!res.ok) {
+    let message = `Faceit API ${res.status}`;
+    try {
+      const body = JSON.parse(text);
+      message = body.message || body.errors?.[0]?.message || message;
+    } catch (_) {
+      /* ignore */
+    }
+    if (res.status === 401 || res.status === 403) {
+      message = 'FACEIT_API_KEY inválida ou sem permissão';
+    }
+    if (res.status === 404) {
+      message = 'Jogador não encontrado';
+    }
+    const err = new Error(message);
+    err.status = res.status === 404 ? 404 : res.status >= 500 ? 502 : 400;
+    throw err;
+  }
+
+  return text ? JSON.parse(text) : {};
+}
+
+function mapMatchStats(item) {
+  const s = item?.stats || item || {};
+  const score = String(pick(s, ['Score', 'score'], ''));
+  const parts = score.split(/[/\-:]/).map((p) => num(p.trim()));
+  const rounds = parts.length >= 2 ? parts[0] + parts[1] : 0;
+  const deaths = num(pick(s, ['Deaths', 'deaths']));
+  const result = pick(s, ['Result', 'result']);
+  const premadeRaw = pick(s, ['Premade', 'premade']);
+  let premade = null;
+  if (premadeRaw === true || premadeRaw === 'true' || premadeRaw === 1 || premadeRaw === '1') {
+    premade = true;
+  } else if (
+    premadeRaw === false ||
+    premadeRaw === 'false' ||
+    premadeRaw === 0 ||
+    premadeRaw === '0'
+  ) {
+    premade = false;
+  }
+
+  return {
+    map: pick(s, ['Map', 'map']),
+    win: result === '1' || result === 1 || String(result).toLowerCase() === 'win',
+    score,
+    kills: num(pick(s, ['Kills', 'kills'])),
+    assists: num(pick(s, ['Assists', 'assists'])),
+    deaths,
+    kd: num(pick(s, ['K/D Ratio', 'KD Ratio', 'kd'])),
+    kr: num(pick(s, ['K/R Ratio', 'KR Ratio', 'kr'])),
+    hs: num(pick(s, ['Headshots %', 'Headshots%', 'HS %', 'hs'])),
+    adr: num(pick(s, ['ADR', 'Average Damage', 'Average Damage per Round', 'adr'])),
+    dpr: rounds > 0 ? +(deaths / rounds).toFixed(2) : null,
+    elo: null,
+    eloDelta: null,
+    premade,
+    matchId: pick(s, ['Match Id', 'Match ID', 'matchId', 'match_id']),
+  };
+}
+
+function analyze(player, lifetime, recentMatches) {
   const cs2 = player.games?.cs2 || {};
   const life = lifetime?.lifetime || {};
-  const matches = Array.isArray(recent) ? recent.slice(0, 20) : [];
-
-  const mapped = matches.map((m) => {
-    const score = String(m.i18 || '');
-    const parts = score.split('/');
-    const rounds =
-      parts.length >= 2 ? num(parts[0]) + num(parts[1]) : 0;
-    const deaths = num(m.i8);
-    return {
-      map: m.i1,
-      win: m.i10 === '1' || m.i10 === 1,
-      score,
-      kills: num(m.i6),
-      assists: num(m.i7),
-      deaths,
-      kd: num(m.c2),
-      kr: num(m.c3),
-      hs: num(m.c4),
-      adr: num(m.c10),
-      dpr: rounds > 0 ? +(deaths / rounds).toFixed(2) : null,
-      elo: m.elo != null ? num(m.elo) : null,
-      eloDelta: m.elo_delta != null ? num(m.elo_delta) : null,
-      premade: !!m.premade,
-      matchId: m.matchId,
-    };
-  });
+  const mapped = recentMatches.slice(0, 20);
 
   const last5 = mapped.slice(0, 5);
   const last10 = mapped.slice(0, 10);
@@ -129,6 +148,7 @@ function analyze(player, lifetime, recent) {
     const hs = list.map((x) => x.hs);
     const minKd = Math.min(...kds);
     const maxKd = Math.max(...kds);
+    const withPremade = list.filter((x) => x.premade != null);
     return {
       n: list.length,
       wr: +((100 * wins) / list.length).toFixed(1),
@@ -146,7 +166,8 @@ function analyze(player, lifetime, recent) {
       highDeaths: list.filter((x) => x.deaths >= 16).length,
       lowHs: list.filter((x) => x.hs < 35).length,
       bodyShot: list.filter((x) => x.adr >= 75 && x.hs < 40).length,
-      solo: list.filter((x) => !x.premade).length,
+      soloKnown: withPremade.length === list.length && list.length > 0,
+      solo: list.filter((x) => x.premade === false).length,
     };
   }
 
@@ -155,10 +176,16 @@ function analyze(player, lifetime, recent) {
   const a20 = agg(last20);
 
   const insights = [];
-  const lifeKd = num(life.k5);
-  const lifeHs = num(life.k8);
-  const lifeAdr = num(life.k17);
-  const lifeWr = num(life.k6);
+  const lifeKd = num(
+    pick(life, ['Average K/D Ratio', 'K/D Ratio', 'Average K/D', 'KD Ratio'])
+  );
+  const lifeHs = num(
+    pick(life, ['Average Headshots %', 'Headshots %', 'Average Headshots%', 'HS %'])
+  );
+  const lifeAdr = num(
+    pick(life, ['ADR', 'Average Damage', 'Average Damage per Round'])
+  );
+  const lifeWr = num(pick(life, ['Win Rate %', 'Win Rate', 'Wins %']));
 
   if (a10) {
     if (a10.kdSwing >= 0.45) {
@@ -203,7 +230,7 @@ function analyze(player, lifetime, recent) {
         text: `WR ${a10.wr}% com K/D ${a10.kd}. Elo pode subir enquanto o swing não melhora — meça HS% e kills, não só vitória.`,
       });
     }
-    if (a10.solo === a10.n) {
+    if (a10.soloKnown && a10.solo === a10.n) {
       insights.push({
         level: 'info',
         title: '100% solo queue',
@@ -265,16 +292,16 @@ function analyze(player, lifetime, recent) {
       elo: cs2.faceit_elo,
       level: cs2.skill_level,
       region: cs2.region,
-      steam: player.platforms?.steam?.id64 || null,
+      steam: player.steam_id_64 || player.platforms?.steam || null,
     },
     lifetime: {
-      matches: num(life.m1),
-      wins: num(life.m2),
+      matches: num(pick(life, ['Matches', 'Total Matches', 'matches'])),
+      wins: num(pick(life, ['Wins', 'Total Wins', 'wins'])),
       kd: lifeKd,
       wr: lifeWr,
       hs: lifeHs,
       adr: lifeAdr,
-      recentForm: life.s0 || [],
+      recentForm: pick(life, ['Recent Results', 'Recent Form', 's0'], []) || [],
     },
     windows: { last5: a5, last10: a10, last20: a20 },
     matches: mapped.slice(0, 10),
@@ -291,11 +318,10 @@ async function handleAnalyze(nickname) {
     throw err;
   }
 
-  const user = await faceitGet(
-    `https://api.faceit.com/users/v1/nicknames/${encodeURIComponent(nick)}`
+  const player = await faceitApi(
+    `/players?nickname=${encodeURIComponent(nick)}&game=cs2`
   );
-  const player = user.payload;
-  if (!player?.id) {
+  if (!player?.player_id) {
     const err = new Error('Jogador não encontrado');
     err.status = 404;
     throw err;
@@ -306,17 +332,17 @@ async function handleAnalyze(nickname) {
     throw err;
   }
 
-  const playerId = player.id;
+  const playerId = player.player_id;
   const [lifetime, recent] = await Promise.all([
-    faceitGet(
-      `https://api.faceit.com/stats/v1/stats/users/${playerId}/games/cs2`
-    ),
-    faceitGet(
-      `https://api.faceit.com/stats/v1/stats/time/users/${playerId}/games/cs2?size=20`
-    ),
+    faceitApi(`/players/${playerId}/stats/cs2`),
+    faceitApi(`/players/${playerId}/games/cs2/stats?offset=0&limit=20`),
   ]);
 
-  return analyze(player, lifetime, recent);
+  const recentMatches = Array.isArray(recent?.items)
+    ? recent.items.map(mapMatchStats)
+    : [];
+
+  return analyze(player, lifetime, recentMatches);
 }
 
 const MIME = {
@@ -372,4 +398,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Faceit Insights rodando em http://localhost:${PORT}`);
+  if (!FACEIT_API_KEY) {
+    console.warn('AVISO: FACEIT_API_KEY não definida — configure para usar a API oficial.');
+  }
 });

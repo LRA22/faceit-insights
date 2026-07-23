@@ -10,3 +10,5 @@ services:
         value: "20"
       - key: PORT
         value: "10000"
+      - key: FACEIT_API_KEY
+        sync: false
