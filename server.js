@@ -44,6 +44,7 @@ function parseNickname(input) {
 
 function curlBinary() {
   return process.platform === 'win32' ? 'curl.exe' : 'curl';
+}
 
 async function faceitGetViaCurl(url) {
   const { stdout } = await execFileAsync(
