@@ -14,7 +14,7 @@ App que busca perfil Faceit CS2 (nick ou URL) e gera insights + treino únicos v
 
 1. Crie chave em [Google AI Studio](https://aistudio.google.com/apikey)
 2. Defina `GEMINI_API_KEY`
-3. Opcional: `GEMINI_MODEL` (default `gemini-2.0-flash`)
+3. Opcional: `GEMINI_MODEL` (default `gemini-flash-latest`)
 
 Sem `GEMINI_API_KEY`, a análise falha — não há insights fixos de fallback.
 

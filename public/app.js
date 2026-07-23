@@ -28,7 +28,7 @@ async function analyze(q) {
   }
 
   btn.disabled = true;
-  setStatus('Consultando Faceit e gerando diagnóstico com Gemini…');
+  setStatus('Analisando perfil…');
   results.hidden = true;
 
   const url = `/api/analyze?q=${encodeURIComponent(q)}`;

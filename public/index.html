@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Diagnóstico único de jogabilidade CS2 a partir do perfil Faceit — insights e plano de treino personalizados." />
   <title>Faceit Insights — CS2</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -10,54 +11,89 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="bg"></div>
-  <header class="top">
-    <div class="brand">
-      <span class="mark">FI</span>
-      <div>
-        <strong>Faceit Insights</strong>
-        <small>CS2 · diagnóstico único por perfil</small>
+  <div class="bg" aria-hidden="true"></div>
+
+  <div class="shell">
+    <header class="top">
+      <div class="top-inner">
+        <a class="brand" href="#buscar">
+          <span class="mark">FI</span>
+          <div>
+            <strong>Faceit Insights</strong>
+            <small>CS2 · diagnóstico por perfil</small>
+          </div>
+        </a>
+        <nav aria-label="Principal">
+          <a href="#buscar">Analisar</a>
+          <a href="#results">Resultado</a>
+        </nav>
       </div>
-    </div>
-    <nav>
-      <a href="#buscar">Buscar</a>
-    </nav>
-  </header>
+    </header>
 
-  <main>
-    <section class="hero" id="buscar">
-      <p class="eyebrow">Insights gerados por IA</p>
-      <h1>Cole o perfil da Faceit e receba um diagnóstico só desse jogador.</h1>
-      <p class="lede">
-        Buscamos as stats oficiais, e o Gemini monta insights e plano de treino
-        personalizados — sem dicas genéricas de página.
-      </p>
+    <main>
+      <section class="hero" id="buscar">
+        <p class="eyebrow">Análise de perfil CS2</p>
+        <h1>Faceit Insights</h1>
+        <p class="lede">
+          Cole o nick ou URL do jogador. Lemos as stats oficiais e devolvemos um
+          diagnóstico e plano de treino únicos para aquele perfil.
+        </p>
 
-      <form class="search" id="searchForm">
-        <label class="sr" for="q">Nick ou URL Faceit</label>
-        <input
-          id="q"
-          name="q"
-          type="text"
-          placeholder="ex: luk- ou https://www.faceit.com/pt-br/players/luk-/cs2"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button type="submit" id="btn">Analisar</button>
-      </form>
-      <p class="hint">Aceita nick ou URL completa do jogador. O resultado aparece abaixo após a análise.</p>
-      <p class="status" id="status" hidden></p>
-    </section>
+        <form class="search" id="searchForm">
+          <label class="sr" for="q">Nick ou URL Faceit</label>
+          <input
+            id="q"
+            name="q"
+            type="text"
+            placeholder="ex: luk- ou https://www.faceit.com/pt-br/players/luk-/cs2"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="submit" id="btn">Analisar perfil</button>
+        </form>
+        <p class="hint">O resultado aparece abaixo. A primeira consulta pode levar alguns segundos.</p>
+        <p class="status" id="status" hidden></p>
+      </section>
 
-    <section class="results" id="results" hidden></section>
-  </main>
+      <section class="results" id="results" hidden></section>
+    </main>
 
-  <footer>
-    <p>
-      MVP · Faceit Data API + Gemini · não afiliado à FACEIT.
-    </p>
-  </footer>
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <span class="mark sm">FI</span>
+          <div>
+            <strong>Faceit Insights</strong>
+            <p>Diagnóstico de jogabilidade CS2 com base em dados reais do perfil.</p>
+          </div>
+        </div>
+        <div class="footer-cols">
+          <div>
+            <h3>Produto</h3>
+            <ul>
+              <li><a href="#buscar">Analisar perfil</a></li>
+              <li><a href="#results">Ver resultado</a></li>
+            </ul>
+          </div>
+          <div>
+            <h3>Sobre</h3>
+            <ul>
+              <li><a href="#buscar">Como funciona</a></li>
+              <li><a href="https://www.faceit.com" target="_blank" rel="noopener noreferrer">Faceit</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>Não afiliado à FACEIT Ltd. Produto independente para análise de stats públicas.</p>
+        <p class="footer-meta">© <span id="year"></span> Faceit Insights</p>
+      </div>
+    </footer>
+  </div>
 
   <script src="/app.js"></script>
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
 </body>
 </html>

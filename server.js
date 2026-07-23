@@ -3,11 +3,33 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
+function loadEnvFile() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
+
+loadEnvFile();
+
 const PORT = process.env.PORT || 3847;
 const PUBLIC = path.join(__dirname, 'public');
 const FACEIT_API_KEY = (process.env.FACEIT_API_KEY || '').trim();
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
-const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.0-flash').trim();
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-flash-latest').trim();
 const FACEIT_API = 'https://open.faceit.com/data/v4';
 
 function send(res, status, body, type = 'application/json') {
@@ -235,7 +257,7 @@ function normalizeActions(actions) {
 
 function parseGeminiJson(rawText) {
   let text = String(rawText || '').trim();
-  if (!text) throw new Error('Resposta vazia do Gemini');
+  if (!text) throw new Error('Não foi possível gerar o diagnóstico');
 
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) text = fence[1].trim();
@@ -249,13 +271,13 @@ function parseGeminiJson(rawText) {
     if (start >= 0 && end > start) {
       parsed = JSON.parse(text.slice(start, end + 1));
     } else {
-      throw new Error('JSON inválido do Gemini');
+      throw new Error('Não foi possível gerar o diagnóstico');
     }
   }
 
   const headline = normalizeInsight(parsed.headline);
   if (!headline) {
-    throw new Error('Gemini não retornou headline válida');
+    throw new Error('Não foi possível gerar o diagnóstico');
   }
 
   const secondary = Array.isArray(parsed.insights)
@@ -264,7 +286,7 @@ function parseGeminiJson(rawText) {
 
   const actions = normalizeActions(parsed.actions);
   if (!actions) {
-    throw new Error('Gemini não retornou actions válidas');
+    throw new Error('Não foi possível gerar o plano de treino');
   }
 
   return {
@@ -275,9 +297,7 @@ function parseGeminiJson(rawText) {
 
 async function generateInsightsWithGemini(stats) {
   if (!GEMINI_API_KEY) {
-    const err = new Error(
-      'Configure GEMINI_API_KEY (chave em https://aistudio.google.com/apikey)'
-    );
+    const err = new Error('Serviço de análise temporariamente indisponível');
     err.status = 503;
     throw err;
   }
@@ -325,7 +345,7 @@ async function generateInsightsWithGemini(stats) {
       }),
     });
   } catch (e) {
-    const err = new Error(e.message || 'Falha ao conectar no Gemini');
+    const err = new Error(e.message || 'Falha ao gerar o diagnóstico');
     err.status = 502;
     throw err;
   }
@@ -335,18 +355,14 @@ async function generateInsightsWithGemini(stats) {
   try {
     body = raw ? JSON.parse(raw) : {};
   } catch (_) {
-    const err = new Error('Resposta inválida do Gemini');
+    const err = new Error('Falha ao gerar o diagnóstico');
     err.status = 502;
     throw err;
   }
 
   if (!res.ok) {
-    const message =
-      body?.error?.message ||
-      (res.status === 401 || res.status === 403
-        ? 'GEMINI_API_KEY inválida ou sem permissão'
-        : `Gemini API ${res.status}`);
-    const err = new Error(message);
+    console.error('Insight provider error:', res.status, body?.error?.message || raw.slice(0, 200));
+    const err = new Error('Falha ao gerar o diagnóstico. Tente novamente.');
     err.status = 502;
     throw err;
   }
@@ -358,7 +374,7 @@ async function generateInsightsWithGemini(stats) {
   try {
     return parseGeminiJson(text);
   } catch (e) {
-    const err = new Error(e.message || 'Falha ao interpretar insights do Gemini');
+    const err = new Error(e.message || 'Falha ao gerar o diagnóstico');
     err.status = 502;
     throw err;
   }
