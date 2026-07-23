@@ -260,6 +260,11 @@ main { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .insight.warn { border-color: rgba(255, 176, 32, 0.35); }
 .insight.ok { border-color: rgba(61, 220, 151, 0.35); }
 .insight.info { border-color: rgba(61, 214, 195, 0.3); }
+.insight.headline {
+  border-width: 1.5px;
+  background: linear-gradient(135deg, rgba(196, 245, 66, 0.08), var(--bg2));
+}
+.insight.headline .tag { color: var(--accent); }
 .insight strong { display: block; margin-bottom: 0.25rem; }
 .insight p { margin: 0; color: var(--muted); font-size: 0.9rem; }
 .tag {
