@@ -28,7 +28,7 @@ async function analyze(q) {
   }
 
   btn.disabled = true;
-  setStatus('Consultando Faceit…');
+  setStatus('Analisando perfil…');
   results.hidden = true;
 
   const url = `/api/analyze?q=${encodeURIComponent(q)}`;
@@ -111,13 +111,13 @@ function render(data) {
           : ''
       }
 
-      <h3 style="margin:0 0 0.6rem;font-size:1rem;color:var(--muted)">Insights</h3>
+      <h3 style="margin:0 0 0.6rem;font-size:1rem;color:var(--muted)">Diagnóstico</h3>
       <div class="insights">
         ${insights
           .map(
-            (i) => `
-          <div class="insight ${esc(i.level)}">
-            <span class="tag">${esc(i.level)}</span>
+            (i, idx) => `
+          <div class="insight ${esc(i.level)}${idx === 0 ? ' headline' : ''}">
+            <span class="tag">${idx === 0 ? 'principal' : esc(i.level)}</span>
             <strong>${esc(i.title)}</strong>
             <p>${esc(i.text)}</p>
           </div>`
@@ -152,6 +152,7 @@ function render(data) {
         </table>
       </div>
 
+      <h3 style="margin:1.25rem 0 0.6rem;font-size:1rem;color:var(--muted)">Plano para este perfil</h3>
       <div class="actions">
         ${actions
           .map(

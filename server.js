@@ -3,9 +3,33 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
+function loadEnvFile() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
+
+loadEnvFile();
+
 const PORT = process.env.PORT || 3847;
 const PUBLIC = path.join(__dirname, 'public');
 const FACEIT_API_KEY = (process.env.FACEIT_API_KEY || '').trim();
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-flash-latest').trim();
 const FACEIT_API = 'https://open.faceit.com/data/v4';
 
 function send(res, status, body, type = 'application/json') {
@@ -130,52 +154,43 @@ function mapMatchStats(item) {
   };
 }
 
-function analyze(player, lifetime, recentMatches) {
+function aggMatches(list) {
+  if (!list.length) return null;
+  const avg = (key) =>
+    list.reduce((s, x) => s + num(x[key]), 0) / list.length;
+  const wins = list.filter((x) => x.win).length;
+  const kds = list.map((x) => x.kd);
+  const hs = list.map((x) => x.hs);
+  const minKd = Math.min(...kds);
+  const maxKd = Math.max(...kds);
+  const withPremade = list.filter((x) => x.premade != null);
+  return {
+    n: list.length,
+    wr: +((100 * wins) / list.length).toFixed(1),
+    kd: +avg('kd').toFixed(2),
+    adr: +avg('adr').toFixed(1),
+    hs: +avg('hs').toFixed(1),
+    kills: +avg('kills').toFixed(1),
+    deaths: +avg('deaths').toFixed(1),
+    dpr: +avg('dpr').toFixed(2),
+    kdSwing: +(maxKd - minKd).toFixed(2),
+    kdMin: +minKd.toFixed(2),
+    kdMax: +maxKd.toFixed(2),
+    hsMin: +Math.min(...hs).toFixed(0),
+    hsMax: +Math.max(...hs).toFixed(0),
+    highDeaths: list.filter((x) => x.deaths >= 16).length,
+    lowHs: list.filter((x) => x.hs < 35).length,
+    bodyShot: list.filter((x) => x.adr >= 75 && x.hs < 40).length,
+    soloKnown: withPremade.length === list.length && list.length > 0,
+    solo: list.filter((x) => x.premade === false).length,
+  };
+}
+
+function buildStatsPayload(player, lifetime, recentMatches) {
   const cs2 = player.games?.cs2 || {};
   const life = lifetime?.lifetime || {};
   const mapped = recentMatches.slice(0, 20);
 
-  const last5 = mapped.slice(0, 5);
-  const last10 = mapped.slice(0, 10);
-  const last20 = mapped.slice(0, 20);
-
-  function agg(list) {
-    if (!list.length) return null;
-    const avg = (key) =>
-      list.reduce((s, x) => s + num(x[key]), 0) / list.length;
-    const wins = list.filter((x) => x.win).length;
-    const kds = list.map((x) => x.kd);
-    const hs = list.map((x) => x.hs);
-    const minKd = Math.min(...kds);
-    const maxKd = Math.max(...kds);
-    const withPremade = list.filter((x) => x.premade != null);
-    return {
-      n: list.length,
-      wr: +((100 * wins) / list.length).toFixed(1),
-      kd: +avg('kd').toFixed(2),
-      adr: +avg('adr').toFixed(1),
-      hs: +avg('hs').toFixed(1),
-      kills: +avg('kills').toFixed(1),
-      deaths: +avg('deaths').toFixed(1),
-      dpr: +avg('dpr').toFixed(2),
-      kdSwing: +(maxKd - minKd).toFixed(2),
-      kdMin: +minKd.toFixed(2),
-      kdMax: +maxKd.toFixed(2),
-      hsMin: +Math.min(...hs).toFixed(0),
-      hsMax: +Math.max(...hs).toFixed(0),
-      highDeaths: list.filter((x) => x.deaths >= 16).length,
-      lowHs: list.filter((x) => x.hs < 35).length,
-      bodyShot: list.filter((x) => x.adr >= 75 && x.hs < 40).length,
-      soloKnown: withPremade.length === list.length && list.length > 0,
-      solo: list.filter((x) => x.premade === false).length,
-    };
-  }
-
-  const a5 = agg(last5);
-  const a10 = agg(last10);
-  const a20 = agg(last20);
-
-  const insights = [];
   const lifeKd = num(
     pick(life, ['Average K/D Ratio', 'K/D Ratio', 'Average K/D', 'KD Ratio'])
   );
@@ -186,103 +201,6 @@ function analyze(player, lifetime, recentMatches) {
     pick(life, ['ADR', 'Average Damage', 'Average Damage per Round'])
   );
   const lifeWr = num(pick(life, ['Win Rate %', 'Win Rate', 'Wins %']));
-
-  if (a10) {
-    if (a10.kdSwing >= 0.45) {
-      insights.push({
-        level: 'warn',
-        title: 'K/D inconsistente',
-        text: `Nas últimas ${a10.n} partidas o K/D foi de ${a10.kdMin} a ${a10.kdMax} (swing ${a10.kdSwing}). Isso costuma ser HS%/finalização oscilando, não só mortes.`,
-      });
-    }
-    if (a10.hs < 40) {
-      insights.push({
-        level: 'warn',
-        title: 'HS% abaixo do ideal',
-        text: `HS médio recente ${a10.hs}% (lifetime ${lifeHs || '—'}%). Meta pra estabilizar: ≥40–45% em todas as partidas.`,
-      });
-    }
-    if (a10.hsMax - a10.hsMin >= 30) {
-      insights.push({
-        level: 'info',
-        title: 'Mira bipolar',
-        text: `HS recentes entre ${a10.hsMin}% e ${a10.hsMax}%. O aim existe nos bons jogos — falta consistência sob pressão.`,
-      });
-    }
-    if (a10.deaths <= 15.5 && a10.kd < 1) {
-      insights.push({
-        level: 'info',
-        title: 'Mortes ok, kills baixas',
-        text: `Mortes ~${a10.deaths}/jogo (próximo da média de lobby), mas K/D ${a10.kd}. Foco: converter contato em kill (first bullet), não só “morrer menos”.`,
-      });
-    }
-    if (a10.bodyShot >= 2) {
-      insights.push({
-        level: 'warn',
-        title: 'Dano no corpo',
-        text: `${a10.bodyShot} partida(s) com ADR alto e HS baixo — crosshair abaixo da head line ou spray longo no peito.`,
-      });
-    }
-    if (a10.wr >= 55 && a10.kd < 0.95) {
-      insights.push({
-        level: 'info',
-        title: 'Wins escondem o fragging',
-        text: `WR ${a10.wr}% com K/D ${a10.kd}. Elo pode subir enquanto o swing não melhora — meça HS% e kills, não só vitória.`,
-      });
-    }
-    if (a10.soloKnown && a10.solo === a10.n) {
-      insights.push({
-        level: 'info',
-        title: '100% solo queue',
-        text: 'Todas as partidas recentes foram solo. Duo com call/trade acelera constância.',
-      });
-    }
-  }
-
-  if (lifeHs && a10 && a10.hs < lifeHs - 3) {
-    insights.push({
-      level: 'warn',
-      title: 'Forma abaixo do seu nível',
-      text: `HS recente (${a10.hs}%) está abaixo do lifetime (${lifeHs}%). Warm-up transferível antes do ranked.`,
-    });
-  }
-
-  if (!insights.length) {
-    insights.push({
-      level: 'ok',
-      title: 'Perfil estável',
-      text: 'Nenhum alerta forte nas métricas recentes. Continue medindo HS%, kills e ADR por partida.',
-    });
-  }
-
-  const actions = [
-    {
-      title: 'Warm-up 20 min',
-      items: [
-        '10 min DM Headshot Only (1–3 tiros por kill)',
-        '5 min peek duels no Aim Botz (jiggle → first bullet)',
-        '5 min prefire head height (Mirage/Inferno offline ou workshop)',
-      ],
-    },
-    {
-      title: 'Metas por partida',
-      items: [
-        'HS% ≥ 40% (ideal 45%+)',
-        'Kills ≥ 16 se mortes ~14–15',
-        'ADR ≥ 85',
-        'K/D entre 0.95 e 1.25 (menos extremos)',
-      ],
-    },
-    {
-      title: 'Em ranked',
-      items: [
-        'Crosshair na head line antes do peek',
-        'Matou 1 → reposiciona (não force o 2º no mesmo swing)',
-        'HS < 35% no intervalo → trade/anchor por alguns rounds',
-        'Máx. 3–4 ranked por sessão',
-      ],
-    },
-  ];
 
   return {
     profile: {
@@ -303,11 +221,163 @@ function analyze(player, lifetime, recentMatches) {
       adr: lifeAdr,
       recentForm: pick(life, ['Recent Results', 'Recent Form', 's0'], []) || [],
     },
-    windows: { last5: a5, last10: a10, last20: a20 },
+    windows: {
+      last5: aggMatches(mapped.slice(0, 5)),
+      last10: aggMatches(mapped.slice(0, 10)),
+      last20: aggMatches(mapped.slice(0, 20)),
+    },
     matches: mapped.slice(0, 10),
-    insights,
+  };
+}
+
+function normalizeInsight(item) {
+  if (!item || typeof item !== 'object') return null;
+  const level = String(item.level || 'info').toLowerCase();
+  const allowed = level === 'warn' || level === 'ok' || level === 'info' ? level : 'info';
+  const title = String(item.title || '').trim();
+  const text = String(item.text || '').trim();
+  if (!title || !text) return null;
+  return { level: allowed, title, text };
+}
+
+function normalizeActions(actions) {
+  if (!Array.isArray(actions)) return null;
+  const out = [];
+  for (const a of actions) {
+    if (!a || typeof a !== 'object') continue;
+    const title = String(a.title || '').trim();
+    const items = Array.isArray(a.items)
+      ? a.items.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    if (!title || !items.length) continue;
+    out.push({ title, items });
+  }
+  return out.length ? out : null;
+}
+
+function parseGeminiJson(rawText) {
+  let text = String(rawText || '').trim();
+  if (!text) throw new Error('Não foi possível gerar o diagnóstico');
+
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      parsed = JSON.parse(text.slice(start, end + 1));
+    } else {
+      throw new Error('Não foi possível gerar o diagnóstico');
+    }
+  }
+
+  const headline = normalizeInsight(parsed.headline);
+  if (!headline) {
+    throw new Error('Não foi possível gerar o diagnóstico');
+  }
+
+  const secondary = Array.isArray(parsed.insights)
+    ? parsed.insights.map(normalizeInsight).filter(Boolean).slice(0, 4)
+    : [];
+
+  const actions = normalizeActions(parsed.actions);
+  if (!actions) {
+    throw new Error('Não foi possível gerar o plano de treino');
+  }
+
+  return {
+    insights: [headline, ...secondary],
     actions,
   };
+}
+
+async function generateInsightsWithGemini(stats) {
+  if (!GEMINI_API_KEY) {
+    const err = new Error('Serviço de análise temporariamente indisponível');
+    err.status = 503;
+    throw err;
+  }
+
+  const prompt = [
+    'Você é um coach de CS2 Faceit. Analise as estatísticas JSON abaixo.',
+    'Responda APENAS com JSON válido (sem markdown) neste schema:',
+    '{',
+    '  "headline": { "level": "warn|info|ok", "title": string, "text": string },',
+    '  "insights": [ { "level": "warn|info|ok", "title": string, "text": string } ],',
+    '  "actions": [ { "title": string, "items": string[] } ]',
+    '}',
+    'Regras:',
+    '- Português do Brasil, direto e específico para ESTE jogador.',
+    '- headline = diagnóstico principal único (1 só).',
+    '- insights = 2 a 4 pontos secundários distintos; cite números reais do JSON.',
+    '- actions = 2 a 3 blocos de treino/metas personalizados ao diagnóstico.',
+    '- PROIBIDO copiar roteiros genéricos tipo "Warm-up 20 min / DM Headshot Only / Aim Botz / Metas por partida" iguais para todo mundo.',
+    '- Cada action deve citar o problema concreto deste perfil (ex.: HS recente X% vs lifetime Y%, swing de K/D).',
+    '- Não invente partidas ou métricas que não estejam no JSON.',
+    '- level: warn (problema), info (contexto), ok (ponto forte/estável).',
+    '',
+    'STATS:',
+    JSON.stringify(stats),
+  ].join('\n');
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    GEMINI_MODEL
+  )}:generateContent`;
+
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.7,
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
+  } catch (e) {
+    const err = new Error(e.message || 'Falha ao gerar o diagnóstico');
+    err.status = 502;
+    throw err;
+  }
+
+  const raw = await res.text();
+  let body;
+  try {
+    body = raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    const err = new Error('Falha ao gerar o diagnóstico');
+    err.status = 502;
+    throw err;
+  }
+
+  if (!res.ok) {
+    console.error('Insight provider error:', res.status, body?.error?.message || raw.slice(0, 200));
+    const err = new Error('Falha ao gerar o diagnóstico. Tente novamente.');
+    err.status = 502;
+    throw err;
+  }
+
+  const text =
+    body?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') ||
+    '';
+
+  try {
+    return parseGeminiJson(text);
+  } catch (e) {
+    const err = new Error(e.message || 'Falha ao gerar o diagnóstico');
+    err.status = 502;
+    throw err;
+  }
 }
 
 async function handleAnalyze(nickname) {
@@ -342,7 +412,14 @@ async function handleAnalyze(nickname) {
     ? recent.items.map(mapMatchStats)
     : [];
 
-  return analyze(player, lifetime, recentMatches);
+  const stats = buildStatsPayload(player, lifetime, recentMatches);
+  const generated = await generateInsightsWithGemini(stats);
+
+  return {
+    ...stats,
+    insights: generated.insights,
+    actions: generated.actions,
+  };
 }
 
 const MIME = {
@@ -399,6 +476,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Faceit Insights rodando em http://localhost:${PORT}`);
   if (!FACEIT_API_KEY) {
-    console.warn('AVISO: FACEIT_API_KEY não definida — configure para usar a API oficial.');
+    console.warn('AVISO: FACEIT_API_KEY não definida.');
+  }
+  if (!GEMINI_API_KEY) {
+    console.warn('AVISO: GEMINI_API_KEY não definida — insights não vão funcionar.');
   }
 });

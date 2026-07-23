@@ -1,18 +1,29 @@
 # Faceit Insights (MVP)
 
-App que busca perfil Faceit CS2 (nick ou URL) e gera insights + treino.
+App que busca perfil Faceit CS2 (nick ou URL) e gera insights + treino únicos via Gemini.
 
-## Chave Faceit (obrigatória)
+## Chaves obrigatórias
+
+### Faceit
 
 1. Crie app em [developers.faceit.com](https://developers.faceit.com)
 2. Gere uma **Server side API Key**
-3. Defina a variável de ambiente `FACEIT_API_KEY`
+3. Defina `FACEIT_API_KEY`
+
+### Gemini
+
+1. Crie chave em [Google AI Studio](https://aistudio.google.com/apikey)
+2. Defina `GEMINI_API_KEY`
+3. Opcional: `GEMINI_MODEL` (default `gemini-flash-latest`)
+
+Sem `GEMINI_API_KEY`, a análise falha — não há insights fixos de fallback.
 
 ## Local
 
 ```bash
 cd faceit-insights
-set FACEIT_API_KEY=sua_chave
+set FACEIT_API_KEY=sua_chave_faceit
+set GEMINI_API_KEY=sua_chave_gemini
 npm start
 ```
 
@@ -26,7 +37,9 @@ Abra http://localhost:3847
    - **Build Command:** `echo ok`
    - **Start Command:** `node server.js`
    - **Plan:** Free
-3. Em **Environment** adicione `FACEIT_API_KEY` = sua chave
+3. Em **Environment** adicione:
+   - `FACEIT_API_KEY` = chave Faceit
+   - `GEMINI_API_KEY` = chave Gemini
 4. Deploy → URL tipo `https://faceit-insights.onrender.com`
 
 ### Alternativas free
