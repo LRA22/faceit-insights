@@ -21,9 +21,8 @@ Sem `GEMINI_API_KEY`, a análise falha — não há insights fixos de fallback.
 ### Economia de cota
 
 - Modelo default: `gemini-3.5-flash-lite` (~500 pedidos/dia no free). Evite `gemini-flash-latest` / 3.6 Flash (~20/dia).
-- Cache exato por **nick + fingerprint das stats** (default **6h**)
-- **Banco de padrões**: se um perfil novo for muito parecido (similaridade ≥ `PATTERN_MATCH_THRESHOLD`, default **0.90**), reutiliza o diagnóstico adaptando os números — **sem gastar RPD**
-- Ajuste: `INSIGHT_CACHE_TTL_MS`, `PATTERN_MATCH_THRESHOLD` (ex.: `0.92` = mais rigoroso)
+- Cache exato por **nick + fingerprint das stats** (default **24h**, em `.cache/`) — só reusa se as métricas forem as mesmas
+- Ajuste: `INSIGHT_CACHE_TTL_MS` (ex.: `21600000` = 6h)
 
 ## Local
 
