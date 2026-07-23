@@ -29,9 +29,15 @@ loadEnvFile();
 const PORT = process.env.PORT || 3847;
 const PUBLIC = path.join(__dirname, 'public');
 const FACEIT_API_KEY = (process.env.FACEIT_API_KEY || '').trim();
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'groq').trim().toLowerCase();
 const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
 // Na cota free atual: 3.5 Flash Lite = ~500 RPD; Flash “cheio” (ex. 3.6) = ~20 RPD
 const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || '').trim();
+// Free ~14.4k RPD; 70B free ~1k RPD
+const GROQ_MODEL = (process.env.GROQ_MODEL || 'llama-3.1-8b-instant').trim();
+const LLM_FALLBACK =
+  (process.env.LLM_FALLBACK || 'true').trim().toLowerCase() !== 'false';
 const FACEIT_API = 'https://open.faceit.com/data/v4';
 // Cache do diagnóstico: default 24h (evita gastar cota ao reconsultar o mesmo perfil)
 const INSIGHT_CACHE_TTL_MS = Number(
@@ -433,17 +439,13 @@ function compactStatsForLlm(stats) {
 }
 
 
-async function generateInsightsWithGemini(stats) {
-  if (!GEMINI_API_KEY) {
-    const err = new Error('Serviço de análise temporariamente indisponível');
-    err.status = 503;
-    throw err;
-  }
-
+function buildInsightPrompt(stats) {
   const compact = compactStatsForLlm(stats);
-  const prompt = [
+  return [
     'Você é um coach de CS2 Faceit. Analise o JSON de stats e monte um diagnóstico completo.',
     'Português do Brasil. Específico para ESTE jogador; cite números reais.',
+    'Responda SOMENTE com um JSON válido neste formato:',
+    '{"headline":{"level":"warn|info|ok","title":"...","text":"..."},"insights":[{"level":"...","title":"...","text":"..."}],"actions":[{"title":"...","items":["..."]}]}',
     'headline: 1 diagnóstico principal (título forte + texto com 2–4 frases).',
     'insights: 2 a 3 pontos secundários detalhados (2–4 frases cada, com números).',
     'actions: 2 a 3 blocos de treino/metas; cada um com 3 a 5 items práticos.',
@@ -453,7 +455,18 @@ async function generateInsightsWithGemini(stats) {
     'Stats:',
     JSON.stringify(compact),
   ].join('\n');
+}
 
+function insightProviderUnavailable() {
+  const err = new Error('Serviço de análise temporariamente indisponível');
+  err.status = 503;
+  return err;
+}
+
+async function generateInsightsWithGemini(stats) {
+  if (!GEMINI_API_KEY) throw insightProviderUnavailable();
+
+  const prompt = buildInsightPrompt(stats);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     GEMINI_MODEL
   )}:generateContent`;
@@ -561,6 +574,101 @@ async function generateInsightsWithGemini(stats) {
   }
 }
 
+async function generateInsightsWithGroq(stats) {
+  if (!GROQ_API_KEY) throw insightProviderUnavailable();
+
+  const prompt = buildInsightPrompt(stats);
+  let res;
+  try {
+    res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        temperature: 0.45,
+        max_tokens: 2500,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Você responde apenas JSON válido no schema pedido (headline, insights, actions).',
+          },
+          { role: 'user', content: prompt },
+        ],
+      }),
+    });
+  } catch (e) {
+    const err = new Error(e.message || 'Falha ao gerar o diagnóstico');
+    err.status = 502;
+    throw err;
+  }
+
+  const raw = await res.text();
+  let body;
+  try {
+    body = raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    const err = new Error('Falha ao gerar o diagnóstico');
+    err.status = 502;
+    throw err;
+  }
+
+  if (!res.ok) {
+    console.error(
+      'Groq error:',
+      res.status,
+      body?.error?.message || raw.slice(0, 200)
+    );
+    const err = new Error('Falha ao gerar o diagnóstico. Tente novamente.');
+    err.status = 502;
+    throw err;
+  }
+
+  const text = body?.choices?.[0]?.message?.content || '';
+  try {
+    return parseGeminiJson(text);
+  } catch (e) {
+    console.error('Groq parse error:', e.message, String(text).slice(0, 280));
+    const err = new Error(e.message || 'Falha ao gerar o diagnóstico');
+    err.status = 502;
+    throw err;
+  }
+}
+
+async function generateInsights(stats) {
+  const primary = LLM_PROVIDER === 'gemini' ? 'gemini' : 'groq';
+  const secondary = primary === 'groq' ? 'gemini' : 'groq';
+  const order = LLM_FALLBACK ? [primary, secondary] : [primary];
+
+  let lastErr = null;
+  for (const name of order) {
+    const hasKey = name === 'groq' ? !!GROQ_API_KEY : !!GEMINI_API_KEY;
+    if (!hasKey) {
+      console.warn(`LLM ${name}: chave ausente, pulando.`);
+      continue;
+    }
+    try {
+      const diagnosis =
+        name === 'groq'
+          ? await generateInsightsWithGroq(stats)
+          : await generateInsightsWithGemini(stats);
+      if (name !== primary) {
+        console.warn(`LLM fallback: ${primary} falhou → usando ${name}`);
+      }
+      return { ...diagnosis, usedProvider: name };
+    } catch (e) {
+      lastErr = e;
+      console.warn(`LLM ${name} falhou:`, e.message || e);
+    }
+  }
+
+  throw lastErr || insightProviderUnavailable();
+}
+
 async function handleAnalyze(nickname) {
   const nick = parseNickname(nickname);
   if (!nick) {
@@ -596,9 +704,9 @@ async function handleAnalyze(nickname) {
   const stats = buildStatsPayload(player, lifetime, recentMatches);
   const compact = compactStatsForLlm(stats);
 
-  // Cache exato nick+stats → 0 LLM
+  // Cache exato primary+nick+stats → 0 LLM (fallback não muda a chave)
   const fp = fingerprint(compact);
-  const cacheKey = `${nick.toLowerCase()}:${fp}`;
+  const cacheKey = `${primaryProviderKey()}:${nick.toLowerCase()}:${fp}`;
   const cached = cacheGet(cacheKey);
   if (cached) {
     return {
@@ -607,22 +715,31 @@ async function handleAnalyze(nickname) {
       actions: cached.actions,
       cached: true,
       source: 'cache',
+      provider: cached.provider || primaryProviderKey(),
     };
   }
 
-  const generated = await generateInsightsWithGemini(stats);
+  const generated = await generateInsights(stats);
+  const usedProvider = generated.usedProvider || primaryProviderKey();
   const insightPayload = {
     insights: generated.insights,
     actions: generated.actions,
+    provider: usedProvider,
   };
   cacheSet(cacheKey, insightPayload);
 
   return {
     ...stats,
-    ...insightPayload,
+    insights: insightPayload.insights,
+    actions: insightPayload.actions,
     cached: false,
     source: 'llm',
+    provider: usedProvider,
   };
+}
+
+function primaryProviderKey() {
+  return LLM_PROVIDER === 'gemini' ? 'gemini' : 'groq';
 }
 
 const MIME = {
@@ -678,10 +795,22 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Faceit Insights rodando em http://localhost:${PORT}`);
+  const primary = LLM_PROVIDER === 'gemini' ? 'gemini' : 'groq';
+  const primaryModel = primary === 'groq' ? GROQ_MODEL : GEMINI_MODEL;
+  const fallback = primary === 'groq' ? 'gemini' : 'groq';
+  console.log(
+    `LLM: ${primary} (${primaryModel})${LLM_FALLBACK ? ` → fallback ${fallback}` : ''}`
+  );
   if (!FACEIT_API_KEY) {
     console.warn('AVISO: FACEIT_API_KEY não definida.');
   }
-  if (!GEMINI_API_KEY) {
-    console.warn('AVISO: GEMINI_API_KEY não definida — insights não vão funcionar.');
+  if (!GROQ_API_KEY && !GEMINI_API_KEY) {
+    console.warn('AVISO: nenhuma chave LLM definida — insights não vão funcionar.');
+  } else if (primary === 'groq' && !GROQ_API_KEY && !GEMINI_API_KEY) {
+    console.warn('AVISO: GROQ_API_KEY ausente e sem Gemini de fallback.');
+  } else if (primary === 'groq' && !GROQ_API_KEY) {
+    console.warn('AVISO: GROQ_API_KEY ausente — usando apenas Gemini (fallback).');
+  } else if (primary === 'gemini' && !GEMINI_API_KEY && !GROQ_API_KEY) {
+    console.warn('AVISO: GEMINI_API_KEY ausente e sem Groq de fallback.');
   }
 });
