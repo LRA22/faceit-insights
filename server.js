@@ -33,9 +33,9 @@ const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || '').trim();
 // Na cota free atual: 3.5 Flash Lite = ~500 RPD; Flash “cheio” (ex. 3.6) = ~20 RPD
 const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
 const FACEIT_API = 'https://open.faceit.com/data/v4';
-// Cache do diagnóstico: default 6h (evita gastar cota ao reconsultar o mesmo perfil)
+// Cache do diagnóstico: default 24h (evita gastar cota ao reconsultar o mesmo perfil)
 const INSIGHT_CACHE_TTL_MS = Number(
-  process.env.INSIGHT_CACHE_TTL_MS || 6 * 60 * 60 * 1000
+  process.env.INSIGHT_CACHE_TTL_MS || 24 * 60 * 60 * 1000
 );
 const CACHE_DIR = path.join(__dirname, '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'insights.json');
@@ -432,214 +432,6 @@ function compactStatsForLlm(stats) {
   };
 }
 
-const PATTERN_MATCH_THRESHOLD = Number(process.env.PATTERN_MATCH_THRESHOLD || 0.9);
-const PATTERNS_FILE = path.join(CACHE_DIR, 'patterns.json');
-const MAX_PATTERNS = Number(process.env.MAX_PATTERNS || 200);
-let patternBank = [];
-
-function clamp01(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(1, n));
-}
-
-function extractFeatures(compact) {
-  const life = compact.life || {};
-  const w = compact.last10 || compact.last5 || {};
-  const lifeKd = num(life.kd);
-  const lifeHs = num(life.hs);
-  const lifeWr = num(life.wr);
-  const lifeAdr = num(life.adr);
-  const kd = num(w.kd);
-  const hs = num(w.hs);
-  const wr = num(w.wr);
-  const adr = num(w.adr);
-  const deaths = num(w.deaths);
-  const swing = num(w.kdSwing);
-  const n = Math.max(1, num(w.n, 1));
-  const highDeaths = num(w.highDeaths) / n;
-  const bodyShot = num(w.bodyShot) / n;
-
-  return [
-    clamp01(lifeKd / 2),
-    clamp01(lifeHs / 100),
-    clamp01(lifeWr / 100),
-    clamp01(lifeAdr / 150),
-    clamp01(kd / 2),
-    clamp01(hs / 100),
-    clamp01(wr / 100),
-    clamp01(adr / 150),
-    clamp01(deaths / 25),
-    clamp01(swing / 2),
-    clamp01((lifeHs - hs + 50) / 100), // HS drop centrado
-    clamp01((lifeKd - kd + 1) / 2), // KD drop centrado
-    wr >= 55 && kd < 0.95 ? 1 : 0,
-    clamp01(highDeaths),
-    clamp01(bodyShot),
-    clamp01(num(compact.level, 5) / 10),
-    clamp01(num(compact.elo, 1500) / 3000),
-  ];
-}
-
-function cosineSimilarity(a, b) {
-  if (!a?.length || !b?.length || a.length !== b.length) return 0;
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
-
-function loadPatternBank() {
-  try {
-    if (!fs.existsSync(PATTERNS_FILE)) {
-      patternBank = [];
-      return;
-    }
-    const raw = JSON.parse(fs.readFileSync(PATTERNS_FILE, 'utf8'));
-    patternBank = Array.isArray(raw) ? raw : [];
-  } catch (_) {
-    patternBank = [];
-  }
-}
-
-function savePatternBank() {
-  try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.writeFileSync(PATTERNS_FILE, JSON.stringify(patternBank.slice(-MAX_PATTERNS)));
-  } catch (e) {
-    console.warn('Não foi possível gravar padrões:', e.message);
-  }
-}
-
-function findBestPattern(features) {
-  let best = null;
-  let bestScore = 0;
-  for (const p of patternBank) {
-    const score = cosineSimilarity(features, p.features);
-    if (score > bestScore) {
-      bestScore = score;
-      best = p;
-    }
-  }
-  if (!best || bestScore < PATTERN_MATCH_THRESHOLD) return null;
-  return { pattern: best, score: +bestScore.toFixed(4) };
-}
-
-function formatNum(v) {
-  if (v == null || !Number.isFinite(Number(v))) return null;
-  const n = Number(v);
-  if (Number.isInteger(n)) return String(n);
-  const t = +n.toFixed(2);
-  if (Number.isInteger(t)) return String(t);
-  return String(t);
-}
-
-function collectNumberPairs(oldC, newC) {
-  const pairs = [];
-  const push = (a, b) => {
-    const oa = formatNum(a);
-    const nb = formatNum(b);
-    if (oa == null || nb == null || oa === nb) return;
-    pairs.push([oa, nb]);
-  };
-
-  push(oldC.elo, newC.elo);
-  push(oldC.level, newC.level);
-  const ol = oldC.life || {};
-  const nl = newC.life || {};
-  push(ol.kd, nl.kd);
-  push(ol.hs, nl.hs);
-  push(ol.wr, nl.wr);
-  push(ol.adr, nl.adr);
-  push(ol.matches, nl.matches);
-
-  for (const key of ['last5', 'last10']) {
-    const o = oldC[key] || {};
-    const n = newC[key] || {};
-    for (const f of [
-      'kd',
-      'hs',
-      'wr',
-      'adr',
-      'kills',
-      'deaths',
-      'kdSwing',
-      'kdMin',
-      'kdMax',
-      'hsMin',
-      'hsMax',
-      'n',
-      'bodyShot',
-      'highDeaths',
-    ]) {
-      push(o[f], n[f]);
-    }
-  }
-
-  // Evitar trocar "1" solto antes de "1.05": ordenar por tamanho do texto antigo
-  pairs.sort((a, b) => b[0].length - a[0].length || b[0].localeCompare(a[0]));
-  // Dedup por old
-  const seen = new Set();
-  return pairs.filter(([o]) => {
-    if (seen.has(o)) return false;
-    seen.add(o);
-    return true;
-  });
-}
-
-function applyNumberPairs(text, pairs) {
-  let out = String(text || '');
-  for (const [oldV, newV] of pairs) {
-    // troca ocorrências do número antigo (evita pedaço de palavra)
-    const re = new RegExp(
-      `(^|[^0-9.,])(${oldV.replace('.', '\\.')})(?=[^0-9]|$)`,
-      'g'
-    );
-    out = out.replace(re, `$1${newV}`);
-  }
-  return out;
-}
-
-function adaptDiagnosis(pattern, newCompact) {
-  const pairs = collectNumberPairs(pattern.compact || {}, newCompact);
-  const mapInsight = (i) => ({
-    level: i.level,
-    title: applyNumberPairs(i.title, pairs),
-    text: applyNumberPairs(i.text, pairs),
-  });
-  const insights = (pattern.insights || []).map(mapInsight);
-  const actions = (pattern.actions || []).map((a) => ({
-    title: applyNumberPairs(a.title, pairs),
-    items: (a.items || []).map((x) => applyNumberPairs(x, pairs)),
-  }));
-  return { insights, actions };
-}
-
-function savePatternFromAnalysis(compact, features, diagnosis) {
-  const id = fingerprint({ features, t: Date.now() });
-  patternBank.push({
-    id,
-    features,
-    compact,
-    insights: diagnosis.insights,
-    actions: diagnosis.actions,
-    createdAt: Date.now(),
-    hits: 0,
-  });
-  if (patternBank.length > MAX_PATTERNS) {
-    patternBank = patternBank.slice(-MAX_PATTERNS);
-  }
-  savePatternBank();
-  return id;
-}
-
-loadPatternBank();
 
 async function generateInsightsWithGemini(stats) {
   if (!GEMINI_API_KEY) {
@@ -804,7 +596,7 @@ async function handleAnalyze(nickname) {
   const stats = buildStatsPayload(player, lifetime, recentMatches);
   const compact = compactStatsForLlm(stats);
 
-  // 1) Cache exato nick+stats → 0 LLM
+  // Cache exato nick+stats → 0 LLM
   const fp = fingerprint(compact);
   const cacheKey = `${nick.toLowerCase()}:${fp}`;
   const cached = cacheGet(cacheKey);
@@ -818,46 +610,18 @@ async function handleAnalyze(nickname) {
     };
   }
 
-  // 2) Match alto com padrão já aprendido → reusa textos adaptando números
-  const features = extractFeatures(compact);
-  const match = findBestPattern(features);
-  if (match) {
-    const adapted = adaptDiagnosis(match.pattern, compact);
-    match.pattern.hits = (match.pattern.hits || 0) + 1;
-    savePatternBank();
-    const insightPayload = {
-      insights: adapted.insights,
-      actions: adapted.actions,
-    };
-    cacheSet(cacheKey, insightPayload);
-    return {
-      ...stats,
-      ...insightPayload,
-      cached: true,
-      source: 'pattern',
-      patternMatch: {
-        id: match.pattern.id,
-        score: match.score,
-        threshold: PATTERN_MATCH_THRESHOLD,
-      },
-    };
-  }
-
-  // 3) Sem match → Gemini e grava novo padrão
   const generated = await generateInsightsWithGemini(stats);
   const insightPayload = {
     insights: generated.insights,
     actions: generated.actions,
   };
   cacheSet(cacheKey, insightPayload);
-  const patternId = savePatternFromAnalysis(compact, features, insightPayload);
 
   return {
     ...stats,
     ...insightPayload,
     cached: false,
     source: 'llm',
-    patternId,
   };
 }
 
