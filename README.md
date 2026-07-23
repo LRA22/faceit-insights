@@ -1,6 +1,6 @@
 # Faceit Insights (MVP)
 
-App que busca perfil Faceit CS2 (nick ou URL) e gera insights + treino únicos via Gemini.
+App que busca perfil Faceit CS2 (nick ou URL) e gera insights + treino únicos via LLM (Gemini ou Groq).
 
 ## Chaves obrigatórias
 
@@ -10,26 +10,36 @@ App que busca perfil Faceit CS2 (nick ou URL) e gera insights + treino únicos v
 2. Gere uma **Server side API Key**
 3. Defina `FACEIT_API_KEY`
 
-### Gemini
+### LLM (Groq principal + Gemini fallback)
+
+Default: `LLM_PROVIDER=groq` com fallback automático para Gemini se o Groq falhar (`LLM_FALLBACK=true`).
+
+**Groq** (principal)
+
+1. Crie chave em [console.groq.com/keys](https://console.groq.com/keys)
+2. Defina `GROQ_API_KEY`
+3. Opcional: `GROQ_MODEL` (default `llama-3.1-8b-instant` — ~14.4k RPD no free)
+
+**Gemini** (fallback)
 
 1. Crie chave em [Google AI Studio](https://aistudio.google.com/apikey)
 2. Defina `GEMINI_API_KEY`
-3. Opcional: `GEMINI_MODEL` (default `gemini-3.5-flash-lite` — ~500 RPD no free; evite Flash “cheio” com ~20 RPD)
+3. Opcional: `GEMINI_MODEL` (default `gemini-3.5-flash-lite` — ~500 RPD no free)
 
-Sem `GEMINI_API_KEY`, a análise falha — não há insights fixos de fallback.
+Sem nenhuma das chaves, a análise falha — não há insights fixos de fallback.
 
 ### Economia de cota
 
-- Modelo default: `gemini-3.5-flash-lite` (~500 pedidos/dia no free). Evite `gemini-flash-latest` / 3.6 Flash (~20/dia).
-- Cache exato por **nick + fingerprint das stats** (default **24h**, em `.cache/`) — só reusa se as métricas forem as mesmas
+- Principal: Groq `llama-3.1-8b-instant` (~14.4k/dia). Fallback: Gemini Flash Lite (~500/dia).
+- Cache exato por **provider + nick + fingerprint das stats** (default **24h**, em `.cache/`)
 - Ajuste: `INSIGHT_CACHE_TTL_MS` (ex.: `21600000` = 6h)
+- Plano de treino cobre mira, posicionamento, munição, arma por situação e spray vs tap/burst.
 
 ## Local
 
 ```bash
 cd faceit-insights
-set FACEIT_API_KEY=sua_chave_faceit
-set GEMINI_API_KEY=sua_chave_gemini
+# .env com FACEIT_API_KEY + (GEMINI_API_KEY ou GROQ_API_KEY)
 npm start
 ```
 
