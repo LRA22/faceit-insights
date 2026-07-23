@@ -28,8 +28,19 @@ async function analyze(q) {
   }
 
   btn.disabled = true;
-  setStatus('Analisando perfil…');
   results.hidden = true;
+
+  const steps = [
+    'Buscando stats na Faceit…',
+    'Montando o diagnóstico…',
+    'Finalizando o plano…',
+  ];
+  let step = 0;
+  setStatus(steps[0]);
+  const tick = setInterval(() => {
+    step = Math.min(step + 1, steps.length - 1);
+    setStatus(steps[step]);
+  }, 2500);
 
   const url = `/api/analyze?q=${encodeURIComponent(q)}`;
   try {
@@ -48,6 +59,7 @@ async function analyze(q) {
   } catch (err) {
     setStatus(err.message || 'Erro ao analisar perfil', true);
   } finally {
+    clearInterval(tick);
     btn.disabled = false;
   }
 }
